@@ -70,9 +70,12 @@ impl InMemoryCheckpointStore {
                     format!("ETag mismatch for partition {key}"),
                 ));
             }
-            store.insert(key.clone(), ownership.clone());
+            let mut renewed_ownership = ownership.clone();
+            renewed_ownership.etag = Some(Etag::from(Uuid::new_v4().to_string()));
+            renewed_ownership.last_modified_time = Some(OffsetDateTime::now_utc());
+            store.insert(key.clone(), renewed_ownership.clone());
             trace!("Updated ownership for key {}", key);
-            Ok(ownership.clone())
+            Ok(renewed_ownership)
         } else {
             trace!("Insert new ownership for key {}", key);
             let mut new_ownership = ownership.clone();
@@ -82,6 +85,34 @@ impl InMemoryCheckpointStore {
             trace!("Inserted new ownership for key {}", key);
             Ok(new_ownership.clone())
         }
+    }
+}
+
+#[cfg(test)]
+impl InMemoryCheckpointStore {
+    /// Test-only seam: force an ownership's `last_modified_time` directly,
+    /// so tests can simulate an expired partition without depending on
+    /// `claim_ownership` preserving a stale timestamp.
+    pub(crate) fn set_last_modified_time_for_test(
+        &self,
+        ownership: &Ownership,
+        last_modified_time: OffsetDateTime,
+    ) -> Result<()> {
+        let key = Ownership::get_ownership_name(
+            &ownership.fully_qualified_namespace,
+            &ownership.event_hub_name,
+            &ownership.consumer_group,
+            &ownership.partition_id,
+        )?;
+        let mut store = self.ownerships.lock().unwrap();
+        let entry = store.get_mut(&key).ok_or_else(|| {
+            Error::with_message(
+                AzureErrorKind::Other,
+                format!("No ownership found for key {key}"),
+            )
+        })?;
+        entry.last_modified_time = Some(last_modified_time);
+        Ok(())
     }
 }
 

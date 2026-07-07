@@ -16,6 +16,7 @@
 
 - Increased `DEFAULT_PARTITION_EXPIRATION_DURATION` from 10 seconds to 60 seconds. The previous default was shorter than `DEFAULT_UPDATE_INTERVAL` (30 seconds), so ownership records expired between load-balancing cycles. The load balancer perpetually saw `current=0` for every consumer and continuously re-claimed partitions, causing widespread duplicate event processing. `EventProcessorBuilder::build` now rejects configurations where `partition_expiration_duration <= update_interval`. ([#3851](https://github.com/Azure/azure-sdk-for-rust/issues/3851))
 - The `EventProcessor`'s load-balancer reconciliation now closes the underlying AMQP receiver for any partition that has been reassigned to another consumer, so the consumer's `stream_events()` resolves and the loop can terminate. Previously a stolen partition's client could continue to attempt receives until the broker tore down the link.
+- `InMemoryCheckpointStore` now rotates the ETag and refreshes `last_modified_time` when an existing ownership is renewed, matching the create path and the production `BlobCheckpointStore`. Previously the renewal path reinserted the caller's record verbatim, leaving a stale ETag and timestamp; that divergence from the real store could mask bugs in code that relies on ETag rotation for optimistic concurrency. ([#4594](https://github.com/Azure/azure-sdk-for-rust/issues/4594))
 
 ### Other Changes
 
