@@ -34,8 +34,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     client
         .send_event(
             vec![2, 4, 8, 16],
-            Some(SendEventOptions {
-                partition_id: Some("0".to_string()),
+            Some({
+                let mut options = SendEventOptions::default();
+                options.partition_id = Some("0".to_string());
+                options
             }),
         )
         .await?;

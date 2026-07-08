@@ -20,15 +20,13 @@ use tracing::info;
 fn test_update_ownership() {
     common::setup();
     let store = InMemoryCheckpointStore::new();
-    let ownership = Ownership {
-        fully_qualified_namespace: "namespace".to_string(),
-        event_hub_name: "event_hub".to_string(),
-        consumer_group: "consumer_group".to_string(),
-        partition_id: "partition_id".to_string(),
-        owner_id: Some("owner_id".to_string()),
-        etag: Some("etag".into()),
-        ..Default::default()
-    };
+    let mut ownership = Ownership::default();
+    ownership.fully_qualified_namespace = "namespace".to_string();
+    ownership.event_hub_name = "event_hub".to_string();
+    ownership.consumer_group = "consumer_group".to_string();
+    ownership.partition_id = "partition_id".to_string();
+    ownership.owner_id = Some("owner_id".to_string());
+    ownership.etag = Some("etag".into());
     let result = store.update_ownership(&ownership);
     assert!(result.is_ok());
 }
@@ -37,13 +35,11 @@ fn test_update_ownership() {
 fn test_update_ownership_invalid() {
     common::setup();
     let store = InMemoryCheckpointStore::new();
-    let ownership = Ownership {
-        fully_qualified_namespace: "fqdn.servicebus.windows.net".to_string(),
-        partition_id: "partition_id".to_string(),
-        owner_id: Some("owner_id".to_string()),
-        etag: Some("etag".into()),
-        ..Default::default()
-    };
+    let mut ownership = Ownership::default();
+    ownership.fully_qualified_namespace = "fqdn.servicebus.windows.net".to_string();
+    ownership.partition_id = "partition_id".to_string();
+    ownership.owner_id = Some("owner_id".to_string());
+    ownership.etag = Some("etag".into());
     let result = store.update_ownership(&ownership);
     assert!(result.is_err());
     assert_eq!(*result.unwrap_err().kind(), AzureErrorKind::Other);
@@ -53,13 +49,11 @@ fn test_update_ownership_invalid() {
 async fn test_update_checkpoint() {
     common::setup();
     let store = InMemoryCheckpointStore::new();
-    let checkpoint = Checkpoint {
-        fully_qualified_namespace: "namespace".to_string(),
-        event_hub_name: "event_hub".to_string(),
-        consumer_group: "consumer_group".to_string(),
-        partition_id: "partition_id".to_string(),
-        ..Default::default()
-    };
+    let mut checkpoint = Checkpoint::default();
+    checkpoint.fully_qualified_namespace = "namespace".to_string();
+    checkpoint.event_hub_name = "event_hub".to_string();
+    checkpoint.consumer_group = "consumer_group".to_string();
+    checkpoint.partition_id = "partition_id".to_string();
     let result = store.update_checkpoint(checkpoint).await;
     assert!(result.is_ok());
 }
@@ -68,13 +62,11 @@ async fn test_update_checkpoint() {
 async fn test_list_checkpoints() {
     common::setup();
     let store = InMemoryCheckpointStore::new();
-    let checkpoint = Checkpoint {
-        fully_qualified_namespace: "namespace".to_string(),
-        event_hub_name: "event_hub".to_string(),
-        consumer_group: "consumer_group".to_string(),
-        partition_id: "partition_id".to_string(),
-        ..Default::default()
-    };
+    let mut checkpoint = Checkpoint::default();
+    checkpoint.fully_qualified_namespace = "namespace".to_string();
+    checkpoint.event_hub_name = "event_hub".to_string();
+    checkpoint.consumer_group = "consumer_group".to_string();
+    checkpoint.partition_id = "partition_id".to_string();
     info!("Adding checkpoint: {checkpoint:?}");
     store.update_checkpoint(checkpoint).await.unwrap();
 
@@ -107,14 +99,13 @@ async fn checkpoints() -> azure_core::Result<()> {
         .unwrap();
     assert_eq!(checkpoints.len(), 0);
 
-    let checkpoint = Checkpoint {
-        fully_qualified_namespace: "ns.servicebus.windows.net".to_string(),
-        event_hub_name: "event-hub-name".to_string(),
-        consumer_group: "consumer-group".to_string(),
-        partition_id: test_name.clone(),
-        offset: Some("offset".to_string()),
-        sequence_number: Some(0),
-    };
+    let mut checkpoint = Checkpoint::default();
+    checkpoint.fully_qualified_namespace = "ns.servicebus.windows.net".to_string();
+    checkpoint.event_hub_name = "event-hub-name".to_string();
+    checkpoint.consumer_group = "consumer-group".to_string();
+    checkpoint.partition_id = test_name.clone();
+    checkpoint.offset = Some("offset".to_string());
+    checkpoint.sequence_number = Some(0);
 
     // Even though we added a checkpoint in one namespace, it doesn't change the older namespace.
     checkpoint_store

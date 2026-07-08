@@ -218,12 +218,12 @@ async fn receive_events(client: &ConsumerClient) -> Result<(), Box<dyn std::erro
     let message_receiver = client
         .open_receiver_on_partition(
             "0".to_string(),
-            Some(OpenReceiverOptions {
-                start_position: Some(StartPosition {
-                    location: StartLocation::Earliest,
-                    ..Default::default()
-                }),
-                ..Default::default()
+            Some({
+                let mut start_position = StartPosition::default();
+                start_position.location = StartLocation::Earliest;
+                let mut options = OpenReceiverOptions::default();
+                options.start_position = Some(start_position);
+                options
             }),
         )
         .await?;

@@ -35,13 +35,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let receiver = consumer
         .open_receiver_on_partition(
             properties.partition_ids[0].clone(),
-            Some(OpenReceiverOptions {
-                start_position: Some(StartPosition {
-                    location: StartLocation::Earliest,
-                    ..Default::default()
-                }),
-                receive_timeout: Some(Duration::seconds(5)),
-                ..Default::default()
+            Some({
+                let mut start_position = StartPosition::default();
+                start_position.location = StartLocation::Earliest;
+                let mut options = OpenReceiverOptions::default();
+                options.start_position = Some(start_position);
+                options.receive_timeout = Some(Duration::seconds(5));
+                options
             }),
         )
         .await?;

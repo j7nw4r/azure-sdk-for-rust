@@ -37,6 +37,7 @@ pub enum ErrorKind {
 }
 
 /// Represents an error that can occur in the Event Hubs module.
+#[non_exhaustive]
 pub struct EventHubsError {
     /// The kind of error that occurred.
     pub kind: ErrorKind,

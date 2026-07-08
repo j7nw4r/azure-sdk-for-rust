@@ -39,10 +39,11 @@ async fn test_round_trip_batch(ctx: TestContext) -> Result<(), Box<dyn Error>> {
 
     let start_sequence = partition_properties.last_enqueued_sequence_number;
     let batch = producer
-        .create_batch(Some(EventDataBatchOptions {
-            partition_id: Some(EVENTHUB_PARTITION.to_string()),
-            partition_key: Some("My Partition Key.".to_string()),
-            ..Default::default()
+        .create_batch(Some({
+            let mut options = EventDataBatchOptions::default();
+            options.partition_id = Some(EVENTHUB_PARTITION.to_string());
+            options.partition_key = Some("My Partition Key.".to_string());
+            options
         }))
         .await?;
 
@@ -104,12 +105,12 @@ async fn test_round_trip_batch(ctx: TestContext) -> Result<(), Box<dyn Error>> {
     let receiver = consumer
         .open_receiver_on_partition(
             EVENTHUB_PARTITION.to_string(),
-            Some(OpenReceiverOptions {
-                start_position: Some(StartPosition {
-                    location: StartLocation::SequenceNumber(start_sequence),
-                    ..Default::default()
-                }),
-                ..Default::default()
+            Some({
+                let mut start_position = StartPosition::default();
+                start_position.location = StartLocation::SequenceNumber(start_sequence);
+                let mut options = OpenReceiverOptions::default();
+                options.start_position = Some(start_position);
+                options
             }),
         )
         .await?;
@@ -175,8 +176,10 @@ async fn test_round_trip_connection_string(_ctx: TestContext) -> Result<(), Box<
     producer
         .send_event(
             marker.clone(),
-            Some(SendEventOptions {
-                partition_id: Some(partition_id.clone()),
+            Some({
+                let mut options = SendEventOptions::default();
+                options.partition_id = Some(partition_id.clone());
+                options
             }),
         )
         .await?;
@@ -188,13 +191,13 @@ async fn test_round_trip_connection_string(_ctx: TestContext) -> Result<(), Box<
     let receiver = consumer
         .open_receiver_on_partition(
             partition_id.clone(),
-            Some(OpenReceiverOptions {
-                start_position: Some(StartPosition {
-                    location: StartLocation::SequenceNumber(start_sequence),
-                    ..Default::default()
-                }),
-                receive_timeout: Some(Duration::seconds(30)),
-                ..Default::default()
+            Some({
+                let mut start_position = StartPosition::default();
+                start_position.location = StartLocation::SequenceNumber(start_sequence);
+                let mut options = OpenReceiverOptions::default();
+                options.start_position = Some(start_position);
+                options.receive_timeout = Some(Duration::seconds(30));
+                options
             }),
         )
         .await?;

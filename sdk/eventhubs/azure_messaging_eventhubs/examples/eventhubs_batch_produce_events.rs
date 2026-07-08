@@ -17,9 +17,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let credential = DeveloperToolsCredential::new(None)?;
 
     let client = ProducerClient::builder()
-        .with_retry_options(RetryOptions {
-            initial_delay: Duration::milliseconds(100),
-            ..Default::default()
+        .with_retry_options({
+            let mut retry_options = RetryOptions::default();
+            retry_options.initial_delay = Duration::milliseconds(100);
+            retry_options
         })
         .open(
             eventhub_namespace.as_str(),
@@ -38,9 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Send the message to each partition using a batch sender.
     for partition_id in properties.partition_ids {
         let batch = client
-            .create_batch(Some(EventDataBatchOptions {
-                partition_id: Some(partition_id.clone()),
-                ..Default::default()
+            .create_batch(Some({
+                let mut options = EventDataBatchOptions::default();
+                options.partition_id = Some(partition_id.clone());
+                options
             }))
             .await?;
         if batch.try_add_event_data(message, None)? {

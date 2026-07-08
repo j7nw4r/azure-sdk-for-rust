@@ -29,6 +29,7 @@ pub mod builders {
 /// Event sent to an Event Hub.
 pub use event_data::EventData;
 
+use crate::error::EventHubsError;
 use azure_core::Uuid;
 use azure_core_amqp::message::AmqpMessageId;
 use std::fmt::Debug;
@@ -65,6 +66,7 @@ use std::time::SystemTime;
 /// ```
 ///
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct EventHubProperties {
     /// The name of the Event Hubs instance.
     pub name: String,
@@ -107,6 +109,7 @@ pub struct EventHubProperties {
 /// ```
 ///
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct EventHubPartitionProperties {
     /// The unique identifier of the partition.
     pub id: String,
@@ -138,6 +141,7 @@ pub struct EventHubPartitionProperties {
 /// assured to be globally unique.
 ///
 #[derive(Debug, PartialEq, Clone)]
+#[non_exhaustive]
 pub enum MessageId {
     /// A binary representation of the message identifier.
     Binary(Vec<u8>),
@@ -182,38 +186,54 @@ impl From<String> for MessageId {
     }
 }
 
-impl From<MessageId> for Uuid {
-    fn from(message_id: MessageId) -> Self {
+impl TryFrom<MessageId> for Uuid {
+    type Error = EventHubsError;
+
+    fn try_from(message_id: MessageId) -> std::result::Result<Self, Self::Error> {
         match message_id {
-            MessageId::Uuid(uuid) => uuid,
-            _ => panic!("Cannot convert MessageId to Uuid"),
+            MessageId::Uuid(uuid) => Ok(uuid),
+            _ => Err(EventHubsError::with_message(
+                "Cannot convert MessageId to Uuid",
+            )),
         }
     }
 }
 
-impl From<MessageId> for Vec<u8> {
-    fn from(message_id: MessageId) -> Self {
+impl TryFrom<MessageId> for Vec<u8> {
+    type Error = EventHubsError;
+
+    fn try_from(message_id: MessageId) -> std::result::Result<Self, Self::Error> {
         match message_id {
-            MessageId::Binary(binary) => binary,
-            _ => panic!("Cannot convert MessageId to Vec<u8>"),
+            MessageId::Binary(binary) => Ok(binary),
+            _ => Err(EventHubsError::with_message(
+                "Cannot convert MessageId to Vec<u8>",
+            )),
         }
     }
 }
 
-impl From<MessageId> for String {
-    fn from(message_id: MessageId) -> Self {
+impl TryFrom<MessageId> for String {
+    type Error = EventHubsError;
+
+    fn try_from(message_id: MessageId) -> std::result::Result<Self, Self::Error> {
         match message_id {
-            MessageId::String(string) => string,
-            _ => panic!("Cannot convert MessageId to String"),
+            MessageId::String(string) => Ok(string),
+            _ => Err(EventHubsError::with_message(
+                "Cannot convert MessageId to String",
+            )),
         }
     }
 }
 
-impl From<MessageId> for u64 {
-    fn from(message_id: MessageId) -> Self {
+impl TryFrom<MessageId> for u64 {
+    type Error = EventHubsError;
+
+    fn try_from(message_id: MessageId) -> std::result::Result<Self, Self::Error> {
         match message_id {
-            MessageId::Ulong(ulong) => ulong,
-            _ => panic!("Cannot convert MessageId to u64"),
+            MessageId::Ulong(ulong) => Ok(ulong),
+            _ => Err(EventHubsError::with_message(
+                "Cannot convert MessageId to u64",
+            )),
         }
     }
 }

@@ -28,8 +28,10 @@ async fn consumer_error(ctx: TestContext) -> Result<()> {
             producer
                 .send_event(
                     event,
-                    Some(SendEventOptions {
-                        partition_id: Some("0".into()),
+                    Some({
+                        let mut options = SendEventOptions::default();
+                        options.partition_id = Some("0".into());
+                        options
                     }),
                 )
                 .await?;
@@ -56,13 +58,13 @@ async fn consumer_error(ctx: TestContext) -> Result<()> {
     let receiver = consumer
         .open_receiver_on_partition(
             properties.partition_ids[0].clone(),
-            Some(OpenReceiverOptions {
-                start_position: Some(StartPosition {
-                    location: StartLocation::Earliest,
-                    ..Default::default()
-                }),
-                //                receive_timeout: Some(azure_core::time::Duration::seconds(1)),
-                ..Default::default()
+            Some({
+                let mut start_position = StartPosition::default();
+                start_position.location = StartLocation::Earliest;
+                let mut options = OpenReceiverOptions::default();
+                options.start_position = Some(start_position);
+                //                options.receive_timeout = Some(azure_core::time::Duration::seconds(1));
+                options
             }),
         )
         .await?;

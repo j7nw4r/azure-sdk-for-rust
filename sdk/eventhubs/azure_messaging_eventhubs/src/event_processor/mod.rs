@@ -88,6 +88,7 @@ pub trait CheckpointStore: Send + Sync {
 }
 
 #[derive(Clone, Debug, Copy)]
+#[non_exhaustive]
 /// Represents the strategy for load balancing event processing.
 ///
 /// The choice of strategy can impact the performance and efficiency

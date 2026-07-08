@@ -28,6 +28,7 @@ pub(crate) mod batch;
 pub(crate) const DEFAULT_EVENTHUBS_APPLICATION: &str = "DefaultApplicationName";
 
 #[derive(Default, Debug, Clone)]
+#[non_exhaustive]
 /// Represents the options that can be set when submitting a batch of event data.
 pub struct SendBatchOptions {}
 
@@ -69,6 +70,7 @@ pub struct ProducerClient {
 /// If the partition is not specified, the Event Hub will automatically select a partition.
 ///
 #[derive(Default, Debug)]
+#[non_exhaustive]
 pub struct SendEventOptions {
     /// The id of the partition to which the event should be sent.
     pub partition_id: Option<String>,
@@ -78,6 +80,7 @@ pub struct SendEventOptions {
 /// The `SendMessageOptions` can be used to specify the partition to which the message should be sent.
 /// If the partition is not specified, the Event Hub will automatically select a partition.
 #[derive(Default, Debug)]
+#[non_exhaustive]
 pub struct SendMessageOptions {
     /// The id of the partition to which the message should be sent.
     pub partition_id: Option<String>,

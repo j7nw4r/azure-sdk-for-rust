@@ -166,14 +166,14 @@ async fn receive_events_on_all_partitions(ctx: TestContext) -> Result<(), Box<dy
         let receiver = client
             .open_receiver_on_partition(
                 partition_id,
-                Some(OpenReceiverOptions {
-                    start_position: Some(StartPosition {
-                        location: azure_messaging_eventhubs::StartLocation::Earliest,
-                        ..Default::default()
-                    }),
+                Some({
+                    let mut start_position = StartPosition::default();
+                    start_position.location = azure_messaging_eventhubs::StartLocation::Earliest;
+                    let mut options = OpenReceiverOptions::default();
+                    options.start_position = Some(start_position);
                     // Timeout for individual receive operations.
-                    receive_timeout: Some(Duration::seconds(5)),
-                    ..Default::default()
+                    options.receive_timeout = Some(Duration::seconds(5));
+                    options
                 }),
             )
             .await?;
@@ -252,14 +252,14 @@ async fn multiple_receivers_on_one_partition(ctx: TestContext) -> Result<(), Box
         let receiver = client
             .open_receiver_on_partition(
                 eh_properties.partition_ids[0].clone(),
-                Some(OpenReceiverOptions {
-                    start_position: Some(StartPosition {
-                        location: azure_messaging_eventhubs::StartLocation::Earliest,
-                        ..Default::default()
-                    }),
+                Some({
+                    let mut start_position = StartPosition::default();
+                    start_position.location = azure_messaging_eventhubs::StartLocation::Earliest;
+                    let mut options = OpenReceiverOptions::default();
+                    options.start_position = Some(start_position);
                     // Timeout for individual receive operations.
-                    receive_timeout: Some(Duration::seconds(5)),
-                    ..Default::default()
+                    options.receive_timeout = Some(Duration::seconds(5));
+                    options
                 }),
             )
             .await?;
@@ -275,14 +275,14 @@ async fn multiple_receivers_on_one_partition(ctx: TestContext) -> Result<(), Box
         let receiver = client
             .open_receiver_on_partition(
                 eh_properties.partition_ids[0].clone(),
-                Some(OpenReceiverOptions {
-                    start_position: Some(StartPosition {
-                        location: azure_messaging_eventhubs::StartLocation::Earliest,
-                        ..Default::default()
-                    }),
+                Some({
+                    let mut start_position = StartPosition::default();
+                    start_position.location = azure_messaging_eventhubs::StartLocation::Earliest;
+                    let mut options = OpenReceiverOptions::default();
+                    options.start_position = Some(start_position);
                     // Timeout for individual receive operations.
-                    receive_timeout: Some(Duration::seconds(5)),
-                    ..Default::default()
+                    options.receive_timeout = Some(Duration::seconds(5));
+                    options
                 }),
             )
             .await?;
@@ -347,14 +347,14 @@ async fn receive_lots_of_events(ctx: TestContext) -> Result<(), Box<dyn Error>> 
     let receiver = client
         .open_receiver_on_partition(
             "0".to_string(),
-            Some(OpenReceiverOptions {
-                start_position: Some(StartPosition {
-                    location: azure_messaging_eventhubs::StartLocation::Earliest,
-                    ..Default::default()
-                }),
+            Some({
+                let mut start_position = StartPosition::default();
+                start_position.location = azure_messaging_eventhubs::StartLocation::Earliest;
+                let mut options = OpenReceiverOptions::default();
+                options.start_position = Some(start_position);
                 // Timeout for individual receive operations.
-                receive_timeout: Some(Duration::seconds(5)),
-                ..Default::default()
+                options.receive_timeout = Some(Duration::seconds(5));
+                options
             }),
         )
         .await?;

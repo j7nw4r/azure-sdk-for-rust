@@ -307,23 +307,20 @@ async fn receive_events_from_processor(ctx: TestContext) -> Result<()> {
             "[{partition_id}]: Last enqueued sequence number: {}",
             partition_info.last_enqueued_sequence_number
         );
-        start_positions.insert(
-            partition_id,
-            StartPosition {
-                location: StartLocation::SequenceNumber(
-                    partition_info.last_enqueued_sequence_number,
-                ),
-                inclusive: false,
-            },
-        );
+        let mut start_position = StartPosition::default();
+        start_position.location =
+            StartLocation::SequenceNumber(partition_info.last_enqueued_sequence_number);
+        start_position.inclusive = false;
+        start_positions.insert(partition_id, start_position);
     }
 
     let processor = create_processor(
         consumer_client,
         Duration::seconds(20),
-        Some(StartPositions {
-            per_partition: start_positions,
-            ..Default::default()
+        Some({
+            let mut start_positions_options = StartPositions::default();
+            start_positions_options.per_partition = start_positions;
+            start_positions_options
         }),
     )
     .await?;
@@ -352,9 +349,8 @@ async fn receive_events_from_processor(ctx: TestContext) -> Result<()> {
 
         for i in 0..10 {
             let event_data = format!("Hello world {}", i);
-            let send_event_options = SendEventOptions {
-                partition_id: Some(partition_client.get_partition_id().to_string()),
-            };
+            let mut send_event_options = SendEventOptions::default();
+            send_event_options.partition_id = Some(partition_client.get_partition_id().to_string());
             producer_client
                 .send_event(event_data, Some(send_event_options))
                 .await

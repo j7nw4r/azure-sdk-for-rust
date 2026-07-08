@@ -40,8 +40,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     producer
         .send_event(
             marker.clone(),
-            Some(SendEventOptions {
-                partition_id: Some(partition_id.clone()),
+            Some({
+                let mut options = SendEventOptions::default();
+                options.partition_id = Some(partition_id.clone());
+                options
             }),
         )
         .await?;
@@ -55,13 +57,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let receiver = consumer
         .open_receiver_on_partition(
             partition_id.clone(),
-            Some(OpenReceiverOptions {
-                start_position: Some(StartPosition {
-                    location: StartLocation::SequenceNumber(start_sequence),
-                    inclusive: false,
-                }),
-                receive_timeout: Some(Duration::seconds(30)),
-                ..Default::default()
+            Some({
+                let mut start_position = StartPosition::default();
+                start_position.location = StartLocation::SequenceNumber(start_sequence);
+                start_position.inclusive = false;
+                let mut options = OpenReceiverOptions::default();
+                options.start_position = Some(start_position);
+                options.receive_timeout = Some(Duration::seconds(30));
+                options
             }),
         )
         .await?;

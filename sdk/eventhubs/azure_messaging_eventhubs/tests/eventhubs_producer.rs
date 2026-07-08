@@ -307,9 +307,10 @@ async fn test_create_and_send_batch(ctx: TestContext) -> Result<(), Box<dyn Erro
     }
     {
         let batch = client
-            .create_batch(Some(EventDataBatchOptions {
-                partition_id: Some("0".to_string()),
-                ..Default::default()
+            .create_batch(Some({
+                let mut options = EventDataBatchOptions::default();
+                options.partition_id = Some("0".to_string());
+                options
             }))
             .await?;
         for i in 0..10 {
@@ -426,9 +427,10 @@ async fn test_overload_batch(ctx: TestContext) -> Result<(), Box<dyn Error>> {
     info!("Client is open.");
     {
         let mut batch = client
-            .create_batch(Some(EventDataBatchOptions {
-                partition_id: Some("0".to_string()),
-                ..Default::default()
+            .create_batch(Some({
+                let mut options = EventDataBatchOptions::default();
+                options.partition_id = Some("0".to_string());
+                options
             }))
             .await?;
         trace!("Batch created.");
@@ -449,9 +451,10 @@ async fn test_overload_batch(ctx: TestContext) -> Result<(), Box<dyn Error>> {
                 assert!(result.is_ok());
                 // Recreate the batch to continue adding messages
                 batch = client
-                    .create_batch(Some(EventDataBatchOptions {
-                        partition_id: Some("0".to_string()),
-                        ..Default::default()
+                    .create_batch(Some({
+                        let mut options = EventDataBatchOptions::default();
+                        options.partition_id = Some("0".to_string());
+                        options
                     }))
                     .await?;
             }

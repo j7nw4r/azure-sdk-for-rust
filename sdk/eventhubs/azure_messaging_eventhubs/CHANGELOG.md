@@ -11,6 +11,8 @@
 ### Breaking Changes
 
 - On the receive path, the `amqp:link:stolen` AMQP condition is no longer auto-retried. A receiver displaced by a higher-or-equal-epoch attacher now surfaces the error (translated to `EventHubsError::ConsumerDisconnected` by `EventReceiver::stream_events`) instead of silently re-attaching. Sender, CBS, and management operations retain the historical retry-on-stolen behavior.
+- Marked the crate's public data, options, and error types `#[non_exhaustive]` so fields and variants can be added after the 1.0 API freeze without a further major version bump. Affected types: the `MessageId`, `StartLocation`, and `ProcessorStrategy` enums; the `SendBatchOptions`, `SendEventOptions`, `SendMessageOptions`, `AddEventDataOptions`, `EventDataBatchOptions`, `OpenReceiverOptions`, `StartPosition`, and `RetryOptions` options structs; and the `EventHubProperties`, `EventHubPartitionProperties`, `Checkpoint`, `Ownership`, `StartPositions`, and `EventHubsError` data structs. External code can no longer build these with a struct literal or exhaustively match the enums; construct the structs from `Default::default()` and set the public fields, and add a wildcard arm when matching the enums.
+- Changed the fallible `MessageId` conversions from `From` to `TryFrom` to remove panics from the public API before 1.0. `Uuid`, `Vec<u8>`, `String`, and `u64` now implement `TryFrom<MessageId>` (returning `Result<_, EventHubsError>`) instead of `From<MessageId>`, which previously panicked when the `MessageId` variant did not match the target type. The infallible conversions into `MessageId` and between `MessageId` and `AmqpMessageId` are unchanged.
 
 ### Bugs Fixed
 

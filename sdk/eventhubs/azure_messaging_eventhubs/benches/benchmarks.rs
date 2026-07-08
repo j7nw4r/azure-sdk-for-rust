@@ -210,8 +210,10 @@ fn send_benchmark(c: &mut Criterion) {
                 client
                     .send_event(
                         event_data,
-                        Some(SendEventOptions {
-                            partition_id: Some("0".to_string()),
+                        Some({
+                            let mut options = SendEventOptions::default();
+                            options.partition_id = Some("0".to_string());
+                            options
                         }),
                     )
                     .await

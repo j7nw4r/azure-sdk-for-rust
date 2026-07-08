@@ -428,6 +428,7 @@ impl ConsumerClient {
 
 /// Represents the options for receiving events from an Event Hub.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct OpenReceiverOptions {
     /// The owner level for messages being retrieved.
     pub owner_level: Option<i64>,
@@ -447,6 +448,7 @@ impl OpenReceiverOptions {}
 
 /// Represents the starting position of a consumer when receiving events from an Event Hub.
 #[derive(Debug, Default, PartialEq, Clone)]
+#[non_exhaustive]
 pub enum StartLocation {
     /// The starting position is specified by an offset.
     Offset(String),
@@ -479,45 +481,36 @@ pub(crate) const SEQUENCE_NUMBER_ANNOTATION: &str = "amqp.annotation.x-opt-seque
 /// ```
 /// use azure_messaging_eventhubs::{StartPosition, StartLocation};
 ///
-/// let start_position = StartPosition{
-///   location: StartLocation::SequenceNumber(12345),
-///    ..Default::default()};;
+/// let mut start_position = StartPosition::default();
+/// start_position.location = StartLocation::SequenceNumber(12345);
 /// ```
 ///
 /// ```
 /// use azure_messaging_eventhubs::{StartPosition, StartLocation};
 ///
-/// let start_position = StartPosition{
-///  location: StartLocation::EnqueuedTime(std::time::SystemTime::now()),
-///  ..Default::default()
-/// };
+/// let mut start_position = StartPosition::default();
+/// start_position.location = StartLocation::EnqueuedTime(std::time::SystemTime::now());
 /// ```
 ///
 /// ```
 /// use azure_messaging_eventhubs::{StartPosition, StartLocation};
 ///
-/// let start_position = StartPosition{
-///   location: StartLocation::Offset("12345".to_string()),
-///   ..Default::default()
-/// };
+/// let mut start_position = StartPosition::default();
+/// start_position.location = StartLocation::Offset("12345".to_string());
 /// ```
 ///
 /// ```
 /// use azure_messaging_eventhubs::{StartPosition, StartLocation};
 ///
-/// let start_position = StartPosition{
-///   location: StartLocation::Earliest,
-///   ..Default::default()
-/// };
+/// let mut start_position = StartPosition::default();
+/// start_position.location = StartLocation::Earliest;
 /// ```
 ///
 /// ```
 /// use azure_messaging_eventhubs::{StartPosition, StartLocation};
 ///
-/// let start_position = StartPosition{
-///   location: StartLocation::Latest,
-///   ..Default::default()
-/// };
+/// let mut start_position = StartPosition::default();
+/// start_position.location = StartLocation::Latest;
 /// ```
 ///
 /// ```
@@ -527,6 +520,7 @@ pub(crate) const SEQUENCE_NUMBER_ANNOTATION: &str = "amqp.annotation.x-opt-seque
 /// ```
 ///
 #[derive(Debug, PartialEq, Clone, Default)]
+#[non_exhaustive]
 pub struct StartPosition {
     /// The location of the starting position.
     pub location: StartLocation,

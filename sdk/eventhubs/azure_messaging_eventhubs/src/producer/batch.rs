@@ -9,6 +9,8 @@ use std::sync::Mutex;
 use tracing::{debug, warn};
 
 /// Represents the options that can be set when adding event data to an [`EventDataBatch`].
+#[derive(Default)]
+#[non_exhaustive]
 pub struct AddEventDataOptions {}
 
 struct EventDataBatchState {
@@ -347,14 +349,14 @@ impl<'a> EventDataBatch<'a> {
 /// ```
 /// use azure_messaging_eventhubs::EventDataBatchOptions;
 ///
-/// let options = EventDataBatchOptions{
-///    max_size_in_bytes: Some(1024),
-///    partition_key: Some("pk".to_string()),
-///    partition_id: Some("12".to_string()),
-///    ..Default::default()};
+/// let mut options = EventDataBatchOptions::default();
+/// options.max_size_in_bytes = Some(1024);
+/// options.partition_key = Some("pk".to_string());
+/// options.partition_id = Some("12".to_string());
 /// ```
 ///
 #[derive(Default)]
+#[non_exhaustive]
 pub struct EventDataBatchOptions {
     /// The maximum size of the batch in bytes.
     pub max_size_in_bytes: Option<u64>,

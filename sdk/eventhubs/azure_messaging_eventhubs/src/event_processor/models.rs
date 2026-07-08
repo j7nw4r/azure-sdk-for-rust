@@ -15,6 +15,7 @@ use std::collections::HashMap;
 /// for a specific partition. It helps in resuming event processing from
 /// the correct position in case of failures or restarts.
 #[derive(Debug, Default, Clone)]
+#[non_exhaustive]
 pub struct Checkpoint {
     /// The fully qualified namespace of the Event Hub.
     pub fully_qualified_namespace: String,
@@ -80,6 +81,7 @@ impl Checkpoint {
 /// by different consumers in a consumer group. It helps in load balancing
 /// and ensuring that each partition is processed by only one consumer at a time.
 #[derive(Debug, Default, Clone)]
+#[non_exhaustive]
 pub struct Ownership {
     /// The fully qualified namespace of the Event Hub.
     pub fully_qualified_namespace: String,
@@ -142,6 +144,7 @@ impl Ownership {
 /// position based on various criteria, such as the latest event, a specific
 /// offset, or a specific sequence number.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct StartPositions {
     /// The starting position for each partition in the Event Hub.
     /// The key is the partition ID, and the value is the starting position.

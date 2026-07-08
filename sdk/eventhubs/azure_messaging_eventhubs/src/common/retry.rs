@@ -33,6 +33,7 @@ pub(crate) enum ErrorRecoveryAction {
 
 /// Options for configuring exponential backoff retry behavior.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RetryOptions {
     /// The initial backoff delay (Default is 100ms).
     pub initial_delay: Duration,
