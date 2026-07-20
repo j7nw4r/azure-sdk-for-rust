@@ -8,7 +8,7 @@
 
 ### Bugs Fixed
 
-- Link properties set through `AmqpReceiverOptions::properties` and `AmqpSenderOptions::properties` now reach the Attach frame. The fe2o3 link builder methods that change the builder type (`name`, `target`, `sender` and `receiver`) rebuild the builder and reset the properties to the default value; only `source` keeps them. Both builder chains called `properties` before `name`, so every link property was discarded and the link attached without it. Event Hubs sends the consumer owner level as the `com.microsoft:epoch` link property, so this made `OpenReceiverOptions::owner_level` a silent no-op.
+- Link properties set through `AmqpReceiverOptions::properties` and `AmqpSenderOptions::properties` now reach the Attach frame. They were discarded before the link attached.
 
 ### Other Changes
 
