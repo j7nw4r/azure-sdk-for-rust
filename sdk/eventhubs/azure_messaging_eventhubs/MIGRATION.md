@@ -235,12 +235,14 @@ The official crate creates a batch from the producer, adds events to it with `tr
 use azure_messaging_eventhubs::{EventDataBatchOptions, ProducerClient};
 
 async fn produce_batch(producer: &ProducerClient) -> Result<(), Box<dyn std::error::Error>> {
-    let batch = producer
-        .create_batch(Some(EventDataBatchOptions {
-            partition_id: Some("0".to_string()),
-            ..Default::default()
-        }))
-        .await?;
+    // Build the options from a closure so an overflow batch can target the same
+    // partition. EventDataBatchOptions is not Clone.
+    let batch_options = || EventDataBatchOptions {
+        partition_id: Some("0".to_string()),
+        ..Default::default()
+    };
+
+    let batch = producer.create_batch(Some(batch_options())).await?;
 
     // try_add_event_data returns false when the event does not fit, which means
     // the batch is full. Never ignore it, or the event is silently dropped.
@@ -249,11 +251,11 @@ async fn produce_batch(producer: &ProducerClient) -> Result<(), Box<dyn std::err
     }
 
     if !batch.try_add_event_data(vec![1, 2, 3, 4], None)? {
-        // The batch is full. Send what you have, start a new batch, and add the
-        // event that did not fit to it.
+        // The batch is full. Send what you have, start a new batch with the same
+        // options, and add the event that did not fit to it.
         producer.send_batch(batch, None).await?;
 
-        let batch = producer.create_batch(None).await?;
+        let batch = producer.create_batch(Some(batch_options())).await?;
         if !batch.try_add_event_data(vec![1, 2, 3, 4], None)? {
             return Err("event does not fit in an empty batch".into());
         }
@@ -320,57 +322,90 @@ This capability has no `azeventhubs` equivalent. `EventProcessor` balances parti
 ```rust ignore processor
 // After: azure_messaging_eventhubs (requires the "in_memory_checkpoint_store" feature for InMemoryCheckpointStore)
 use azure_messaging_eventhubs::{
-    error::ErrorKind, ConsumerClient, EventProcessor, InMemoryCheckpointStore,
+    error::ErrorKind, processor::PartitionClient, ConsumerClient, EventProcessor,
+    InMemoryCheckpointStore,
 };
 use azure_identity::DeveloperToolsCredential;
+use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use std::sync::Arc;
 
-async fn process() -> Result<(), Box<dyn std::error::Error>> {
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+async fn process() -> Result<(), BoxError> {
     let credential = DeveloperToolsCredential::new(None)?;
     let consumer = ConsumerClient::builder()
         .open("my-ns.servicebus.windows.net", "my-eventhub".to_string(), credential.clone())
         .await?;
 
     let checkpoint_store = Arc::new(InMemoryCheckpointStore::new());
+    // `build` returns an Arc<EventProcessor>, so clone the handle to share it.
     let processor = EventProcessor::builder()
         .build(consumer, checkpoint_store)
         .await?;
 
     // Run the processor's load balancer in the background.
     let runner = processor.clone();
-    let handle = tokio::spawn(async move { runner.run().await });
+    let mut handle = tokio::spawn(async move { runner.run().await });
 
-    // Shut the processor down even if processing fails, so the background
-    // load balancer always stops.
-    let result = process_partitions(&processor).await;
+    // Watch the load balancer while consuming. If `run()` stops early, waiting
+    // on the next assignment would otherwise block forever.
+    let result = tokio::select! {
+        runner_result = &mut handle => runner_result?.map_err(BoxError::from),
+        consume_result = process_partitions(&processor) => consume_result,
+    };
+
+    // Shut the processor down on either outcome, so the load balancer always
+    // stops and the task is joined.
     processor.shutdown().await?;
-    handle.await??;
+    if !handle.is_finished() {
+        handle.await??;
+    }
     result
 }
 
-async fn process_partitions(processor: &EventProcessor) -> Result<(), Box<dyn std::error::Error>> {
-    loop {
-        // Acquire a partition assigned to this instance and process its events.
-        let partition_client = processor.next_partition_client().await?;
-        println!("processing partition {}", partition_client.get_partition_id());
+async fn process_partitions(processor: &EventProcessor) -> Result<(), BoxError> {
+    // Partitions are assigned over time and each stream is long-lived, so keep
+    // taking new assignments while the partitions you already hold keep running.
+    // `stream_events()` is not `Send`, so drive them on this task with
+    // `FuturesUnordered` rather than `tokio::spawn`.
+    let mut partitions = FuturesUnordered::new();
 
-        let mut stream = partition_client.stream_events();
-        while let Some(event) = stream.next().await {
-            match event {
-                Ok(event) => {
-                    // ... handle the event ...
-                    // Record progress so another instance can resume from here.
-                    partition_client.update_checkpoint(&event).await?;
-                }
-                // Load balancing moved this partition to another instance. Stop
-                // using this client and wait for the next assignment; this is a
-                // normal reassignment, not a failure.
-                Err(err) if matches!(err.kind, ErrorKind::ConsumerDisconnected(_)) => break,
-                Err(err) => return Err(err.into()),
+    loop {
+        tokio::select! {
+            partition_client = processor.next_partition_client() => {
+                partitions.push(process_partition(partition_client?));
+            }
+            // Surface failures from partitions that finished, for example after
+            // a reassignment.
+            Some(finished) = partitions.next(), if !partitions.is_empty() => {
+                finished?;
             }
         }
     }
+}
+
+async fn process_partition(partition_client: Arc<PartitionClient>) -> Result<(), BoxError> {
+    println!("processing partition {}", partition_client.get_partition_id());
+
+    let mut stream = partition_client.stream_events();
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(event) => {
+                // ... handle the event ...
+                // Record progress so another instance can resume from here.
+                partition_client.update_checkpoint(&event).await?;
+            }
+            // Load balancing moved this partition to another instance. Stop
+            // using this client and let the task end; the processor hands out
+            // the next assignment through `next_partition_client`. This is a
+            // normal reassignment, not a failure.
+            Err(err) if matches!(err.kind, ErrorKind::ConsumerDisconnected(_)) => break,
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    Ok(())
 }
 ```
 
@@ -387,8 +422,11 @@ use azure_identity::DeveloperToolsCredential;
 use azure_messaging_eventhubs::{ConsumerClient, EventProcessor};
 use azure_messaging_eventhubs_checkpointstore_blob::BlobCheckpointStore;
 use azure_storage_blob::BlobServiceClient;
+use std::sync::Arc;
 
-async fn process_with_blob_checkpoints() -> Result<(), Box<dyn std::error::Error>> {
+// Returns the configured processor; run and consume it as shown above.
+async fn build_processor_with_blob_checkpoints(
+) -> Result<Arc<EventProcessor>, Box<dyn std::error::Error>> {
     let credential = DeveloperToolsCredential::new(None)?;
 
     // Build the blob container client that will hold checkpoint and ownership blobs.
@@ -407,9 +445,10 @@ async fn process_with_blob_checkpoints() -> Result<(), Box<dyn std::error::Error
         .build(consumer, checkpoint_store)
         .await?;
 
-    // Run the processor; checkpoints now persist in Azure Blob Storage.
-    processor.run().await?;
-    Ok(())
+    // Only the checkpoint store changed. Run the processor and consume its
+    // partition clients exactly as in the previous scenario; the checkpoints
+    // that `update_checkpoint` writes now persist in Azure Blob Storage.
+    Ok(processor)
 }
 ```
 
