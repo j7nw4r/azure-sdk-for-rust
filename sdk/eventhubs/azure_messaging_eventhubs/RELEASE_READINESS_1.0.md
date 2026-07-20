@@ -183,27 +183,43 @@ Nothing in the test suite inspects an outgoing Attach frame, which is why this
 survived. A regression test should assert that the frame carries
 `com.microsoft:epoch`.
 
-### The existing epoch test does not cover the broker path
+### The existing epoch test cannot pass, and has probably never passed
 
 `tests/eventhubs_processor.rs:444`
-(`second_processor_displaces_first_with_consumer_disconnected`) passes, and its
-doc comment says it guards the `amqp:link:stolen` translation. It does not,
-because the epoch never reaches the wire and two processors at
-`PROCESSOR_OWNER_LEVEL = 0` (`src/event_processor/processor.rs:35`) coexist
-happily at the broker.
+(`second_processor_displaces_first_with_consumer_disconnected`) documents itself
+as the end-to-end guard for the `amqp:link:stolen` translation. Both routes to
+its assertion are closed, so it can only time out and panic.
 
-What actually satisfies that test is the local ownership backstop.
-`revoke_partition_clients` (`src/event_processor/processor.rs:152`) calls
-`EventReceiver::request_close()` (`src/consumer/event_receiver.rs:238`), which
-sets a flag so the next poll resolves with `ConsumerDisconnected(None)`. The
-method's own doc comment describes it as a "Backstop for the broker's
-epoch-based disconnect". The test asserts
-`matches!(err.kind, ErrorKind::ConsumerDisconnected(_))`, which the backstop
-satisfies. The test would still pass with the broker path completely broken,
-which is the situation today.
+The broker route is closed because the epoch never reaches the wire (blocker 1),
+so two receivers at owner level 0 are just two ordinary readers. Event Hubs
+allows five concurrent readers per partition per consumer group, so the broker
+has no reason to displace either one.
 
-Tighten it to assert `ConsumerDisconnected(Some(_))` so it covers the path it
-claims.
+The local route is closed too. `revoke_partition_clients`
+(`src/event_processor/processor.rs:152`) only runs for partitions the load
+balancer reports as taken away. The test gives each processor its own
+checkpoint store (`tests/eventhubs_processor.rs:463` and `:483`), and
+`InMemoryCheckpointStore` holds per-instance state with no shared statics
+(`src/in_memory_checkpoint_store.rs:17`). The two ownership tables are disjoint,
+so processor A never observes processor B, nothing is reported stolen, and
+`request_close()` is never called.
+
+The test is `#[recorded::test(live)]`, so CI never runs it. PR #4439, which
+introduced epoch-0 receivers and `ConsumerDisconnected`, has an unchecked box in
+its own test plan for this test. The feature shipped with its only end-to-end
+guard never executed, which is why blocker 1 went unnoticed.
+
+Repairing the test needs three changes, not one:
+
+1. Fix the link-builder ordering so the epoch reaches the wire.
+2. Assert `ConsumerDisconnected(Some(d))` and that `d.condition` is
+   `LinkStolen`, which no local path can produce.
+3. Give both processors a shared checkpoint store, or state in the test that the
+   local revoke path is excluded by construction.
+
+A unit test in `azure_core_amqp` that asserts the properties survive into the
+Attach frame is the cheaper and more reliable guard, because it needs no broker
+and therefore runs in CI.
 
 ### Displacement does not translate to `ConsumerDisconnected`
 
@@ -385,11 +401,18 @@ and has a doc example that passes `Some(1024)` (`src/producer/batch.rs:351`).
 It has no effect. A caller who caps a batch to bound memory, or to satisfy a
 constraint downstream of the send, gets a silently over-filled batch instead.
 
-The fix is to take the smaller of the caller's value and the link maximum, and
-to reject a caller value larger than the link maximum with a clear error. That
-is a behavior change and not an API break, so it does not have to precede the
-version bump. Shipping a GA release with a documented option that does nothing
-is still the wrong trade.
+The fix is to keep the caller's value when the link allows it, and to reject a
+larger request with an error naming both sizes. It is not to reduce the value
+silently. The .NET, Go, and Java Event Hubs clients all report an error here,
+verified from their source; none reduces and none ignores. That behavior is not
+in their published reference documentation, so it has to be read off the
+implementations.
+
+This is a behavior change and not an API break, so it does not have to precede
+the version bump. Shipping a GA release with a documented option that does
+nothing is still the wrong trade.
+
+Fixed in PR #4808.
 
 ### `SendEventOptions` does not implement `Clone`
 
@@ -445,6 +468,34 @@ decision rather than leaving it implicit.
 later, on the first poll of `stream_events()`
 (`src/consumer/event_receiver.rs:202`). The message states an event that has not
 happened, and it misdirects anyone debugging from logs.
+
+## Status of the fixes
+
+Every blocker in this report was independently verified after it was written,
+and each verified defect now has a change open against it.
+
+| Item | Where |
+|---|---|
+| `owner_level` never reaches the broker | Issue #4804, PR #4805 |
+| Displacement does not translate to `ConsumerDisconnected` | PR #4807 |
+| `mgmt_client` recovery self-deadlock | Issue #4728, PR #4806 |
+| `#[non_exhaustive]` on 16 public types | PR #4722, already open |
+| Panicking `From<MessageId>` impls | PR #4722, already open |
+| `EventDataBatchOptions.max_size_in_bytes` ignored | PR #4808 |
+
+Still unowned: the missing `Clone` and `Debug` derives, the misleading attach
+log, the CHANGELOG headers, and the README defects. `AddEventDataOptions` is
+also unreachable from outside the crate, because `producer::batch` is
+`pub(crate)` and `lib.rs` re-exports only `EventDataBatch` and
+`EventDataBatchOptions`. That one belongs in PR #4722, because a reachable
+`AddEventDataOptions` needs `#[non_exhaustive]` too.
+
+One correction to an earlier draft of this report: the two ignored tests that
+first demonstrated the deadlock included one that locked the mutex by hand and
+then called recovery. That is a tautology, since it would fail under any
+non-reentrant lock, including a correct one. PR #4806 replaces both with tests
+that drive production entry points only and stall the build against a loopback
+peer.
 
 ## Sequence to 1.0
 
