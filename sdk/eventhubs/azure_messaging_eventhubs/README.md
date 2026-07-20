@@ -278,15 +278,15 @@ event contents are sensitive.
 
 Events follow a consistent level policy so you can pick the verbosity you need:
 
-* `error` - terminal or fatal failures that abort an operation, plus the exit of a long-lived background task.
-* `warn` - recoverable or anomalous-but-handled conditions, such as a send being rejected,
+- `error` - terminal or fatal failures that abort an operation, plus the exit of a long-lived background task.
+- `warn` - recoverable or anomalous-but-handled conditions, such as a send being rejected,
   modified, or released, attach failures, retry exhaustion, a recovery action being required, an
   etag mismatch, a missing management key, or an unauthorized fast-fail.
-* `info` - lifecycle success milestones, such as a connection or link opening, a link attaching, a
+- `info` - lifecycle success milestones, such as a connection or link opening, a link attaching, a
   receiver attaching on a partition, recovery completing, or partition ownership being claimed.
-* `debug` - per-operation bookkeeping, error classification decisions, retry chatter, and internal
+- `debug` - per-operation bookkeeping, error classification decisions, retry chatter, and internal
   map updates.
-* `trace` - very-high-frequency or per-message detail, including the hot send path.
+- `trace` - very-high-frequency or per-message detail, including the hot send path.
 
 ## Contributing
 
