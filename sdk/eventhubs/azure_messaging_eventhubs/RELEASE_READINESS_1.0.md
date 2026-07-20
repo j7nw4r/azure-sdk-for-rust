@@ -93,6 +93,25 @@ holds.
 
 Both tests are `#[ignore]`d, so the default suite stays green.
 
+The deadlock is also confirmed against a real broker, which removes the last
+doubt about whether it is reachable. A live probe corrupted the shared access
+key so that CBS authorization of the `$management` path fails inside the build,
+then made 20 concurrent `get_eventhub_properties` calls. On `main` the recovery
+hook fired on the task that held the guard, logged `ReconnectLink` and the cache
+clears, and never reached the management-client drop. The process then produced
+no log line for seven minutes, with spans reporting `time.idle=479s`, until the
+harness stopped it. The whole client stopped, not only the calls that failed.
+
+With PR #4806 the same probe finishes. All 20 callers report an authorization
+error in 93.1 seconds, both recovery plans run to completion, and later calls
+report errors in about 6 seconds, so a failed build leaves the cache retryable.
+A separate probe made 100 concurrent first calls on a cold client and the log
+shows one management build, so callers share a single build in flight. Warm
+calls measure a median of 279 ms against 277 ms on `main`.
+
+The repro needs the concurrent burst, and it was run once per branch, so there
+is no repro rate.
+
 ### Live capability matrix
 
 Command:
@@ -504,6 +523,14 @@ Verification found three more defects, all filed and none owned yet.
 | `receiver_settle_mode` and `target` ignored on attach | Issue #4809 |
 | A hung AMQP open blocks recovery and every waiter | Issue #4810 |
 | Concurrent attaches race on a duplicate `$cbs` link | Issue #4811 |
+| `close()` fails after a failed CBS authorization | Issue #4812 |
+
+One item is environmental rather than a code defect. Six of the 14 live
+producer tests fail under Microsoft Entra ID with `Unauthorized access. 'Send'
+claim(s) are required`, while the same sends pass with a connection string. The
+test account holds Listen and Manage but not the Azure Event Hubs Data Sender
+role. The Entra live suite cannot cover the send path until that role is
+granted.
 
 Still unowned: the missing `Clone` and `Debug` derives, the misleading attach
 log, the CHANGELOG headers, and the README defects. `AddEventDataOptions` is
