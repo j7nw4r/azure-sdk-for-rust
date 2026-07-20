@@ -75,6 +75,12 @@ const RECEIVE_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 /// Default per-phase hard timeout. Overridden by `SMOKE_PHASE_TIMEOUT_SECS`.
 const DEFAULT_PHASE_TIMEOUT_SECS: u64 = 120;
 
+/// How long the broker gets to displace a receiver and propagate the AMQP
+/// detach. This matches the window the in-tree live test
+/// `second_processor_displaces_first_with_consumer_disconnected` allows. A
+/// shorter window reports a slow broker as an SDK defect.
+const STEAL_TIMEOUT: StdDuration = StdDuration::from_secs(90);
+
 type BoxError = Box<dyn Error + Send + Sync>;
 
 /// How the harness authenticates. Both paths land on the same public API. Only
@@ -980,7 +986,7 @@ async fn phase_epoch_steal(
     // on the message text.
     {
         let mut stream_a = receiver_a.stream_events();
-        match tokio::time::timeout(RECEIVE_TIMEOUT, stream_a.next()).await {
+        match tokio::time::timeout(STEAL_TIMEOUT, stream_a.next()).await {
             Ok(Some(Err(e))) => {
                 if matches!(e.kind, ErrorKind::ConsumerDisconnected(_)) {
                     report.ok("P5 receiver A reports ConsumerDisconnected", "");
@@ -1294,10 +1300,12 @@ async fn main() -> ExitCode {
         timeout,
         phase_processor(&cfg, &mut report, &state)
     );
+    // The steal phase waits on the broker, so it gets the steal window on top of
+    // the standard phase budget.
     run_phase!(
         report,
         "P5 epoch steal",
-        timeout,
+        timeout + STEAL_TIMEOUT,
         phase_epoch_steal(&cfg, &mut report, &state)
     );
     // The soak phase is longer than a normal phase by design, so it gets its own
