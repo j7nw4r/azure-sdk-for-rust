@@ -242,11 +242,24 @@ async fn produce_batch(producer: &ProducerClient) -> Result<(), Box<dyn std::err
         }))
         .await?;
 
-    // try_add_event_data returns false if the event does not fit in the batch.
-    if batch.try_add_event_data("first event", None)? {
-        // added successfully
+    // try_add_event_data returns false when the event does not fit, which means
+    // the batch is full. Never ignore it, or the event is silently dropped.
+    if !batch.try_add_event_data("first event", None)? {
+        return Err("event does not fit in an empty batch".into());
     }
-    batch.try_add_event_data(vec![1, 2, 3, 4], None)?;
+
+    if !batch.try_add_event_data(vec![1, 2, 3, 4], None)? {
+        // The batch is full. Send what you have, start a new batch, and add the
+        // event that did not fit to it.
+        producer.send_batch(batch, None).await?;
+
+        let batch = producer.create_batch(None).await?;
+        if !batch.try_add_event_data(vec![1, 2, 3, 4], None)? {
+            return Err("event does not fit in an empty batch".into());
+        }
+        producer.send_batch(batch, None).await?;
+        return Ok(());
+    }
 
     producer.send_batch(batch, None).await?;
     Ok(())
@@ -481,7 +494,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Clients are `Send + Sync` and can be shared across tasks. The `EventProcessor` is designed to be cloned (typically wrapped in `Arc`) so its load balancer can run on one task while you consume `PartitionClient`s on another, as shown in [Scalable Consumption](#scalable-consumption-with-eventprocessor).
+Clients are `Send + Sync` and can be shared across tasks. `EventProcessorBuilder::build` already returns an `Arc<EventProcessor>`, so you clone that handle rather than wrapping the processor yourself. That lets the load balancer run on one task while you consume `PartitionClient`s on another, as shown in [Scalable Consumption](#scalable-consumption-with-eventprocessor).
 
 ## Feature Flags
 
