@@ -117,11 +117,19 @@ summary() {
 # #[recorded::test] resolve their recording paths from the compile-time
 # CARGO_MANIFEST_DIR, so a test binary built under .claude/worktrees fails at
 # test-proxy session start. The test step is skipped there.
+#
+# Both paths are resolved to absolute physical paths before they are compared.
+# From a subdirectory, git reports --git-dir as an absolute path but
+# --git-common-dir as a path relative to the current directory, so a raw string
+# comparison reports every checkout as a worktree.
 is_linked_worktree() {
   local git_dir common_dir
   git_dir="$(git rev-parse --git-dir 2>/dev/null || echo "")"
   common_dir="$(git rev-parse --git-common-dir 2>/dev/null || echo "")"
-  [[ -n "$git_dir" && -n "$common_dir" && "$git_dir" != "$common_dir" ]]
+  [[ -n "$git_dir" && -n "$common_dir" ]] || return 1
+  git_dir="$(cd "$git_dir" 2>/dev/null && pwd -P)" || return 1
+  common_dir="$(cd "$common_dir" 2>/dev/null && pwd -P)" || return 1
+  [[ "$git_dir" != "$common_dir" ]]
 }
 
 # 1. Formatting.

@@ -1509,4 +1509,133 @@ mod tests {
         assert!(RecoveryPlan::for_action(&ErrorRecoveryAction::RetryAction).is_none());
         assert!(RecoveryPlan::for_action(&ErrorRecoveryAction::ReturnError).is_none());
     }
+
+    // `ensure_amqp_management` (connection.rs:576) takes the `mgmt_client` guard
+    // and holds it for the whole management-client build. This test shows the
+    // guard is really held across that build: it points the connection at a
+    // local TCP peer that accepts the socket but never sends the AMQP protocol
+    // header, so `create_connection` stays blocked inside the locked region.
+    // A concurrent `try_lock` must then fail.
+    //
+    // This is the precondition for `ensure_amqp_management_recovery_self_deadlocks`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "binds a local TCP port and leaves a task blocked; see RELEASE_READINESS_1.0.md"]
+    async fn ensure_amqp_management_holds_mgmt_lock_across_build() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind stalled AMQP peer");
+        let port = listener.local_addr().expect("listener address").port();
+        // Hold every accepted socket open and answer nothing. The client sends
+        // its protocol header and waits for a reply that never arrives.
+        std::thread::spawn(move || {
+            let mut accepted = Vec::new();
+            while let Ok((stream, _)) = listener.accept() {
+                accepted.push(stream);
+            }
+        });
+
+        let url = Url::parse(&format!("amqp://127.0.0.1:{port}")).expect("stalled peer URL");
+        let connection = RecoverableConnection::new(
+            url,
+            None,
+            None,
+            Arc::new(MockCredential),
+            Default::default(),
+            None,
+        );
+
+        let build = tokio::spawn({
+            let connection = connection.clone();
+            async move {
+                let _ = connection.ensure_amqp_management().await;
+            }
+        });
+
+        // Poll until the build task enters the locked region. Once it is in
+        // there it stays, because the peer never answers.
+        let mut guard_is_held = false;
+        for _ in 0..100 {
+            if connection.mgmt_client.try_lock().is_none() {
+                guard_is_held = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        // The guard must still be held a second later, and the build task must
+        // still be running. This rules out a pass from catching a momentary lock
+        // during a fast-failing build.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        let guard_is_still_held = connection.mgmt_client.try_lock().is_none();
+        let build_is_running = !build.is_finished();
+        build.abort();
+
+        assert!(
+            guard_is_held,
+            "`ensure_amqp_management` never held the `mgmt_client` guard. Either the \
+             environment refused the loopback connection, or the lock scope at \
+             connection.rs:576 changed."
+        );
+        assert!(
+            build_is_running,
+            "The management-client build finished instead of blocking on the stalled peer."
+        );
+        assert!(
+            guard_is_still_held,
+            "`ensure_amqp_management` released the `mgmt_client` guard while the build \
+             was still in flight."
+        );
+    }
+
+    // Regression repro for the management-client self-deadlock.
+    //
+    // `ensure_amqp_management` (connection.rs:576) holds the `mgmt_client` guard
+    // across the management-client build. That build authorizes the management
+    // path through `RecoverableClaimsBasedSecurity::authorize_path`, whose retry
+    // loop passes a recovery hook. A connection-level failure there runs
+    // `recover_from_error`, and the `drop_mgmt_client` arm of
+    // `apply_recovery_plan` (connection.rs:832) takes `mgmt_client` again on the
+    // same task. `async_lock::Mutex` is not reentrant, so the task hangs forever
+    // instead of returning an error.
+    //
+    // Scope of this repro: the test holds the guard itself, exactly as
+    // `ensure_amqp_management` does, and then runs the real `recover_from_error`
+    // for a connection-level action. It does not drive the CBS leg, because no
+    // test seam in this crate can fault CBS inside the locked region without a
+    // live AMQP peer: `force_error` only injects in
+    // `RecoverableManagementClient::call` (before the lock is taken), and
+    // `disable_authorization` skips CBS instead of failing it.
+    // `ensure_amqp_management_holds_mgmt_lock_across_build` covers the other
+    // half, that the production path really holds the guard across the build.
+    #[tokio::test]
+    #[ignore = "reproduces mgmt-mutex self-deadlock; see RELEASE_READINESS_1.0.md"]
+    async fn ensure_amqp_management_recovery_self_deadlocks() {
+        let url = Url::parse("amqps://example.com").expect("test URL");
+        let connection = RecoverableConnection::new(
+            url,
+            None,
+            None,
+            Arc::new(MockCredential),
+            Default::default(),
+            None,
+        );
+
+        // Same guard, same task, same lock scope as connection.rs:576.
+        let _mgmt_guard = connection.mgmt_client.lock().await;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            RecoverableConnection::recover_from_error(
+                Arc::downgrade(&connection),
+                ErrorRecoveryAction::ReconnectConnection,
+            ),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "Recovery did not complete in 10s. The same-task re-lock of `mgmt_client` at \
+             connection.rs:832 fired: `apply_recovery_plan` waits for a guard the calling \
+             task already holds, so a connection-level failure inside \
+             `ensure_amqp_management` hangs instead of surfacing an error."
+        );
+    }
 }
