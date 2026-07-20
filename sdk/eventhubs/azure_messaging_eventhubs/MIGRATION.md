@@ -42,8 +42,8 @@ This is a **cross-library migration**, not a version bump. `azeventhubs` and `az
 | --- | --- | --- |
 | Producer type | `EventHubProducerClient` | `ProducerClient` |
 | Consumer type | `EventHubConsumerClient` | `ConsumerClient` |
-| Construction | `new_from_connection_string(...)` | `ProducerClient::builder().open(host, name, credential)` |
-| Authentication | Connection string (SAS key) | Microsoft Entra ID via `azure_identity` credentials |
+| Construction | `new_from_connection_string(...)` | `ProducerClient::builder().open(host, name, credential)`, or `.open_with_connection_string(...)` |
+| Authentication | Connection string (SAS key) | Microsoft Entra ID via `azure_identity` credentials (recommended), or a connection string / SAS |
 | Endpoint input | Connection string contains the host | Fully qualified namespace host, for example `my-ns.servicebus.windows.net` |
 | Sent event type | `EventData` | `EventData` (with a builder), or anything `Into<EventData>` |
 | Received event type | `ReceivedEventData` | `ReceivedEventData` |
@@ -57,22 +57,24 @@ This is a **cross-library migration**, not a version bump. `azeventhubs` and `az
 
 ### Crate Name and Cargo.toml
 
-Remove `azeventhubs` and add the official crate plus `azure_identity` (for credentials) and `tokio` (the async runtime):
+Remove `azeventhubs` and add the official crate plus `azure_identity`, which supplies the credential types the new client authenticates with:
 
 ```diff
  [dependencies]
 - azeventhubs = "0.20"
 + azure_messaging_eventhubs = "0.15"
 + azure_identity = "1"
-+ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-If you want scalable consumption with durable checkpoints in Azure Blob Storage, also add the companion crate (it brings in `azure_storage_blob`, which you use to build the container client):
+Both crates are async and run on [tokio](https://tokio.rs), so your existing runtime dependency carries over unchanged.
+
+If you want scalable consumption with durable checkpoints in Azure Blob Storage, also add the companion crate. You build the container client yourself, so you need `azure_storage_blob` and `azure_core` (for the `Url` type) as direct dependencies too:
 
 ```diff
  [dependencies]
 + azure_messaging_eventhubs_checkpointstore_blob = "0.9"
 + azure_storage_blob = "1"
++ azure_core = "1"
 ```
 
 You will also typically want `futures` for the `StreamExt` trait when iterating received events:
@@ -128,7 +130,30 @@ let producer = ProducerClient::builder()
     .await?;
 ```
 
-`DeveloperToolsCredential` picks up your Azure CLI login (`az login`) and is appropriate for local development. In production, prefer a managed identity (`ManagedIdentityCredential`) or another specific credential type. See the [`azure_identity`](https://aka.ms/azsdk/rust/identity/docs) documentation for the full set of credentials. If you must keep using a connection string during migration, the recommended replacement for shared access keys is to grant your application identity the **Azure Event Hubs Data Sender** or **Data Receiver** role on the namespace.
+`DeveloperToolsCredential` picks up your Azure CLI login (`az login`) and is appropriate for local development. In production, prefer a managed identity (`ManagedIdentityCredential`) or another specific credential type. See the [`azure_identity`](https://aka.ms/azsdk/rust/identity/docs) documentation for the full set of credentials. To replace key-based access, grant your application identity the **Azure Event Hubs Data Sender** or **Data Receiver** role on the namespace.
+
+#### Keeping a Connection String
+
+You do not have to change the authentication model and the client code in one step. Both builders also accept an Event Hubs connection string, which lets you port the API surface first and move to Entra ID afterwards:
+
+```rust ignore connection_string
+use azure_messaging_eventhubs::ProducerClient;
+
+async fn open_with_sas() -> Result<(), Box<dyn std::error::Error>> {
+    let connection_string = std::env::var("EVENTHUBS_CONNECTION_STRING")?;
+
+    // The Event Hub name is optional when the connection string carries an
+    // `EntityPath`; if you pass both, they must agree.
+    let producer = ProducerClient::builder()
+        .open_with_connection_string(&connection_string, Some("my-eventhub"))
+        .await?;
+
+    producer.close().await?;
+    Ok(())
+}
+```
+
+`ConsumerClient::builder()` exposes the same method. When the connection string carries a `SharedAccessKeyName` and `SharedAccessKey`, the client signs and refreshes SAS tokens for you. When it carries a pre-formed `SharedAccessSignature`, that token is used as-is and cannot be refreshed, so the broker drops the link once the token expires. Entra ID remains the recommendation for production because it avoids storing a secret in your configuration.
 
 ### Client Construction
 
@@ -282,7 +307,7 @@ This capability has no `azeventhubs` equivalent. `EventProcessor` balances parti
 ```rust ignore processor
 // After: azure_messaging_eventhubs (requires the "in_memory_checkpoint_store" feature for InMemoryCheckpointStore)
 use azure_messaging_eventhubs::{
-    ConsumerClient, EventProcessor, InMemoryCheckpointStore,
+    error::ErrorKind, ConsumerClient, EventProcessor, InMemoryCheckpointStore,
 };
 use azure_identity::DeveloperToolsCredential;
 use futures::StreamExt;
@@ -303,21 +328,36 @@ async fn process() -> Result<(), Box<dyn std::error::Error>> {
     let runner = processor.clone();
     let handle = tokio::spawn(async move { runner.run().await });
 
-    // Acquire a partition assigned to this instance and process its events.
-    let partition_client = processor.next_partition_client().await?;
-    println!("processing partition {}", partition_client.get_partition_id());
-
-    let mut stream = partition_client.stream_events().take(100);
-    while let Some(event) = stream.next().await {
-        let event = event?;
-        // ... handle the event ...
-        // Record progress so another instance can resume from here.
-        partition_client.update_checkpoint(&event).await?;
-    }
-
+    // Shut the processor down even if processing fails, so the background
+    // load balancer always stops.
+    let result = process_partitions(&processor).await;
     processor.shutdown().await?;
     handle.await??;
-    Ok(())
+    result
+}
+
+async fn process_partitions(processor: &EventProcessor) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        // Acquire a partition assigned to this instance and process its events.
+        let partition_client = processor.next_partition_client().await?;
+        println!("processing partition {}", partition_client.get_partition_id());
+
+        let mut stream = partition_client.stream_events();
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(event) => {
+                    // ... handle the event ...
+                    // Record progress so another instance can resume from here.
+                    partition_client.update_checkpoint(&event).await?;
+                }
+                // Load balancing moved this partition to another instance. Stop
+                // using this client and wait for the next assignment; this is a
+                // normal reassignment, not a failure.
+                Err(err) if matches!(err.kind, ErrorKind::ConsumerDisconnected(_)) => break,
+                Err(err) => return Err(err.into()),
+            }
+        }
+    }
 }
 ```
 
@@ -327,7 +367,7 @@ async fn process() -> Result<(), Box<dyn std::error::Error>> {
 
 For durable checkpoints shared across instances, use `azure_messaging_eventhubs_checkpointstore_blob`. You construct an `azure_storage_blob::BlobServiceClient`, derive a container client, and wrap it in a `BlobCheckpointStore`. The container should already exist.
 
-```rust ignore
+```rust ignore checkpoint_store
 // After: azure_messaging_eventhubs + azure_messaging_eventhubs_checkpointstore_blob
 use azure_core::http::Url;
 use azure_identity::DeveloperToolsCredential;
@@ -366,27 +406,47 @@ The same Entra ID credential authenticates both Event Hubs and Blob Storage. Gra
 
 `azure_messaging_eventhubs` defines its own error type, `EventHubsError`, exposed through the crate's `Result<T>` alias (`azure_messaging_eventhubs::Result<T>`). Match on the public `ErrorKind` via the error's `kind` field. Note that `kind` is a field, not a method.
 
+Match where the error actually surfaces. `ConsumerDisconnected` is reported by the receive path, so it arrives as a stream item rather than from the call that opened the receiver:
+
 ```rust ignore error_handling
 use azure_messaging_eventhubs::error::ErrorKind;
+use futures::StreamExt;
 
-match consumer.open_receiver_on_partition("0".to_string(), None).await {
-    Ok(_receiver) => { /* ... */ }
-    Err(err) => match err.kind {
-        // The broker disconnected this receiver because another consumer attached
-        // with the same or higher owner level (epoch). Re-acquire the partition.
-        ErrorKind::ConsumerDisconnected(_) => {
-            eprintln!("partition reassigned to another consumer");
-        }
-        // The service rejected a send (for example, a quota was exceeded).
-        ErrorKind::SendRejected(details) => {
-            eprintln!("send rejected: {details:?}");
-        }
-        // An error surfaced from azure_core (HTTP, credential, etc.).
-        ErrorKind::AzureCore(ref e) => eprintln!("core error: {e}"),
-        // An AMQP transport error.
-        ErrorKind::AmqpError(ref e) => eprintln!("amqp error: {e:?}"),
+let receiver = consumer.open_receiver_on_partition("0".to_string(), None).await?;
+let mut stream = receiver.stream_events();
+
+while let Some(event) = stream.next().await {
+    match event {
+        Ok(_event) => { /* ... process the event ... */ }
+        Err(err) => match err.kind {
+            // The broker disconnected this receiver because another consumer
+            // attached with the same or higher owner level (epoch). Stop using
+            // this receiver and re-acquire the partition.
+            ErrorKind::ConsumerDisconnected(_) => {
+                eprintln!("partition reassigned to another consumer");
+                break;
+            }
+            // An error surfaced from azure_core (HTTP, credential, etc.).
+            ErrorKind::AzureCore(ref e) => eprintln!("core error: {e}"),
+            // An AMQP transport error.
+            ErrorKind::AmqpError(ref e) => eprintln!("amqp error: {e:?}"),
+            other => eprintln!("other error: {other:?}"),
+        },
+    }
+}
+```
+
+`SendRejected` comes from the send path instead, so match it on the producer call:
+
+```rust ignore send_rejected
+use azure_messaging_eventhubs::error::ErrorKind;
+
+if let Err(err) = producer.send_event("Hello, Event Hub!", None).await {
+    match err.kind {
+        // The service rejected the send, for example because a quota was exceeded.
+        ErrorKind::SendRejected(ref details) => eprintln!("send rejected: {details:?}"),
         other => eprintln!("other error: {other:?}"),
-    },
+    }
 }
 ```
 
@@ -436,15 +496,15 @@ To use the in-memory checkpoint store:
 azure_messaging_eventhubs = { version = "0.15", features = ["in_memory_checkpoint_store"] }
 ```
 
-The TLS backend is selected through `azure_core`'s transport features (for example a `reqwest`-based stack). If you need a specific TLS configuration, configure it on `azure_core` / the HTTP client as you would for any Azure SDK for Rust crate.
+Event Hubs traffic runs over AMQP, not HTTP, so the TLS backend comes from the AMQP stack rather than from `azure_core`'s HTTP transport features. The `default` feature enables `azure_core_amqp/default`, which selects `fe2o3-amqp/native-tls`. To use a different backend, disable default features and enable the one you want on `azure_core_amqp` directly.
 
 ## FAQ and Common Pitfalls
 
 **Where did the connection string go?**
-The official crate authenticates with Microsoft Entra ID, not shared access keys. Pass the fully qualified namespace host (for example `my-ns.servicebus.windows.net`, the part after `Endpoint=sb://` in your old connection string) plus an `azure_identity` credential. Assign the **Azure Event Hubs Data Sender** / **Data Receiver** role to your identity to replace key-based access.
+It is still supported. Call `open_with_connection_string(...)` on either builder to keep your existing connection string, which is the quickest way to port the code without also changing how you authenticate. The official crate recommends Microsoft Entra ID instead: pass the fully qualified namespace host (for example `my-ns.servicebus.windows.net`, the part after `Endpoint=sb://` in your old connection string) plus an `azure_identity` credential to `open(...)`, and assign the **Azure Event Hubs Data Sender** / **Data Receiver** role to your identity to replace key-based access. See [Keeping a Connection String](#keeping-a-connection-string).
 
 **I passed my whole connection string as the host and it failed.**
-`open(...)` expects only the host (`my-ns.servicebus.windows.net`), not the full `Endpoint=sb://...;SharedAccessKey=...` string. Strip everything except the namespace host.
+`open(...)` expects only the host (`my-ns.servicebus.windows.net`), not the full `Endpoint=sb://...;SharedAccessKey=...` string. Strip everything except the namespace host, or call `open_with_connection_string(...)` instead, which parses the full string for you.
 
 **My consumer stopped with a `ConsumerDisconnected` error.**
 That is expected when another consumer attaches to the same partition with an equal or higher owner level (epoch), which is exactly how `EventProcessor` reassigns partitions during load balancing. Treat it as a signal to re-acquire a partition via `EventProcessor::next_partition_client` rather than as a fatal error. This has no direct `azeventhubs` analogue because `azeventhubs` had no processor.
