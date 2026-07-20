@@ -1,4 +1,4 @@
-<!-- cspell:ignore mgmt worktrees -->
+<!-- cspell:ignore mgmt worktrees typestate -->
 
 # `azure_messaging_eventhubs` 1.0.0 readiness
 
@@ -17,16 +17,23 @@ proved by `cargo publish --dry-run` in the offline gate. Nothing in the current
 tree is an unannounced API break against the published 0.15.0, which
 `cargo-semver-checks` proves.
 
-Four items block the version bump. One is a real defect that hangs a client. The
-other three are API and release hygiene that become permanent the moment 1.0
-ships.
+Five items block the version bump. Two are real defects, one of which makes a
+documented feature a silent no-op. The other three are API and release hygiene
+that become permanent the moment 1.0 ships.
 
 | # | Blocker | Class | Evidence |
 |---|---|---|---|
-| 1 | `mgmt_client` recovery self-deadlock | Defect | Reproduced by test |
-| 2 | `#[non_exhaustive]` missing on 16 public types | API contract | Inspection |
-| 3 | Four panicking `From<MessageId>` impls | API contract | Inspection |
-| 4 | Release mechanics: stale CHANGELOG headers | Release | Inspection |
+| 1 | `owner_level` never reaches the broker | Defect | Live wire trace |
+| 2 | `mgmt_client` recovery self-deadlock | Defect | Reproduced by test |
+| 3 | `#[non_exhaustive]` missing on 16 public types | API contract | Inspection |
+| 4 | Four panicking `From<MessageId>` impls | API contract | Inspection |
+| 5 | Release mechanics: stale CHANGELOG headers | Release | Inspection |
+
+Blocker 1 has a consequence for sequencing. The fault is in `azure_core_amqp`,
+not in this crate, and it is present in the published `1.1.0` that this crate
+links against. Event Hubs 1.0.0 therefore waits on a corrected
+`azure_core_amqp` release. That is a scheduling dependency between two crates,
+not a return of the old prerelease coupling.
 
 Read the evidence classes below before you act on any single line. The four
 classes are kept separate on purpose. A test cannot prove an API contract item,
@@ -88,19 +95,140 @@ Both tests are `#[ignore]`d, so the default suite stays green.
 
 ### Live capability matrix
 
-Not yet run. Fill this section from
+Command:
 `cargo run --package azure_messaging_eventhubs --example eventhubs_smoke_test`
-against a real namespace. The harness covers:
+Run against a real namespace with 5 partitions, consumer group `$Default`.
+Result: **21 passed, 2 failed, 2 skipped.**
 
-| Phase | Capability |
-|---|---|
-| P1 | Management: hub properties, partition properties for every partition |
-| P2 | Produce: partition-addressed send, gateway-routed send, batch send, batch-full behavior |
-| P3 | Consume: read from a captured tail, verify every event by marker, system properties populated, read from `Earliest` |
-| P4 | Event processor: build, claim a partition, receive, checkpoint, confirm the checkpoint persisted |
-| P5 | Epoch steal: a receiver displaced by a higher owner level reports `ConsumerDisconnected` |
-| P6 | Idle recovery soak (opt-in) |
-| P7 | Pre-formed SAS expiry (opt-in) |
+| Phase | Capability | Result |
+|---|---|---|
+| P1 | Connect a producer | PASS |
+| P1 | `get_eventhub_properties` | PASS, 5 partitions |
+| P1 | `get_partition_properties` for every partition | PASS, 5 queried |
+| P2 | `send_event`, partition-addressed | PASS |
+| P2 | `send_event`, gateway-routed | PASS |
+| P2 | `send_batch` | PASS, 5 events |
+| P2 | A full batch refuses the next event | **FAIL** |
+| P3 | Connect a consumer | PASS |
+| P3 | Round trip, every event verified by marker | PASS, 5 of 5 |
+| P3 | Broker system properties populated | PASS |
+| P3 | Read from `StartLocation::Earliest` | PASS |
+| P4 | Build an `EventProcessor` | PASS |
+| P4 | Claim a partition | PASS |
+| P4 | Attach the partition receiver | PASS |
+| P4 | Receive and `update_checkpoint` | PASS |
+| P4 | Checkpoint persisted in the store | PASS |
+| P5 | Open and attach two receivers at owner levels 0 and 1 | PASS |
+| P5 | The displaced receiver reports `ConsumerDisconnected` | **FAIL** |
+| P5 | The displacing receiver receives | PASS |
+| P6 | Idle recovery soak | SKIP, opt-in |
+| P7 | Pre-formed SAS expiry | SKIP, opt-in |
+
+Both failures are defects in the code under test, not in the harness. Each is
+described below. Two earlier failures in the first live run, a processor that
+never delivered and a displacing receiver that never received, were harness
+faults and are fixed: receivers attach lazily on the first poll of
+`stream_events()`, so the harness now primes each receiver before it sends
+anything.
+
+### Blocker 1: `owner_level` never reaches the broker
+
+`OpenReceiverOptions::owner_level` is documented, public, and has no effect.
+The epoch property is dropped before the AMQP Attach frame is built, so the
+broker never learns that a receiver claims an owner level. Epoch-based
+single-owner consumption is a documented Event Hubs guarantee. This crate
+advertises it and does not deliver it.
+
+The chain:
+
+1. `open_receiver_on_partition` puts `com.microsoft:epoch` and
+   `com.microsoft.com:receiver-name` into `AmqpReceiverOptions::properties`
+   (`src/consumer/mod.rs:293` and `:299`).
+2. `azure_core_amqp` builds the fe2o3 link with `.properties(...)` and then
+   `.name(...)`, in that order
+   (`azure_core_amqp-1.1.0/src/fe2o3/receiver.rs:63-69`).
+3. In `fe2o3-amqp` 0.14.0, `Builder::name()` is a typestate transition that
+   returns a rebuilt `Builder` with `properties: Default::default()`
+   (`fe2o3-amqp-0.14.0/src/link/builder.rs:185`). Calling `.name()` after
+   `.properties()` therefore discards the properties. `.source()` preserves
+   them; `.name()` does not.
+
+The outgoing Attach frame, captured live with `fe2o3_amqp=trace`, confirms it:
+
+```text
+frame=Attach(Attach { name: "305abb16-...", role: Receiver,
+  source: Some(Source { ... filter: Some(... "x-opt-offset > '@latest'") ... }),
+  ..., properties: None })
+```
+
+Causation was confirmed, not just correlation. With the two builder lines
+swapped in a local copy of `azure_core_amqp` 1.1.0, injected through
+`--config patch.crates-io`, the broker displaces the lower-epoch receiver at
+once:
+
+```text
+condition: LinkStolen, description: "Receiver 'nil' with a higher epoch '1'
+already exists. Receiver 'nil' with epoch 0 cannot be created..."
+```
+
+The `'nil'` in the broker's own message is the same bug: the receiver-name
+property is missing too.
+
+The fix is to call `.name(name)` before `.properties(...)`. The sender path has
+the same ordering fault (`azure_core_amqp-1.1.0/src/fe2o3/sender.rs:70-78`).
+The in-tree `azure_core_amqp` at `1.2.0-beta.1` has not fixed either one, so
+this needs a real change and a release, not a version bump.
+
+Nothing in the test suite inspects an outgoing Attach frame, which is why this
+survived. A regression test should assert that the frame carries
+`com.microsoft:epoch`.
+
+### The existing epoch test does not cover the broker path
+
+`tests/eventhubs_processor.rs:444`
+(`second_processor_displaces_first_with_consumer_disconnected`) passes, and its
+doc comment says it guards the `amqp:link:stolen` translation. It does not,
+because the epoch never reaches the wire and two processors at
+`PROCESSOR_OWNER_LEVEL = 0` (`src/event_processor/processor.rs:35`) coexist
+happily at the broker.
+
+What actually satisfies that test is the local ownership backstop.
+`revoke_partition_clients` (`src/event_processor/processor.rs:152`) calls
+`EventReceiver::request_close()` (`src/consumer/event_receiver.rs:238`), which
+sets a flag so the next poll resolves with `ConsumerDisconnected(None)`. The
+method's own doc comment describes it as a "Backstop for the broker's
+epoch-based disconnect". The test asserts
+`matches!(err.kind, ErrorKind::ConsumerDisconnected(_))`, which the backstop
+satisfies. The test would still pass with the broker path completely broken,
+which is the situation today.
+
+Tighten it to assert `ConsumerDisconnected(Some(_))` so it covers the path it
+claims.
+
+### Displacement does not translate to `ConsumerDisconnected`
+
+This defect is masked by blocker 1 and appears once the epoch reaches the wire.
+With the patched `azure_core_amqp`, a displaced receiver still does not report
+`ConsumerDisconnected`. The traced sequence:
+
+1. The broker sends `Detach` with `LinkStolen`. The in-flight receive fails as a
+   `LinkStateError::RemoteClosedWithError` rather than an `AmqpDescribedError`,
+   so `translate_receive_error` (`src/consumer/event_receiver.rs:29`) does not
+   match it.
+2. The retry layer classifies the failure as `ReconnectLink`, clears the cached
+   receiver, and re-attaches at the old epoch.
+3. The broker rejects the re-attach with `LinkStolen`. That error is flattened
+   into `AmqpError::with_message(format!("Failed to ensure receiver: {e}"))`
+   (`src/common/recoverable/receiver.rs:105`), which destroys the described
+   error kind.
+4. It leaves the stream through the `?` on `get_receiver`
+   (`src/consumer/event_receiver.rs:202`), which never passes through
+   `translate_receive_error`.
+
+The caller sees `ErrorKind::AmqpError("Failed to ensure receiver: ...")`. The
+0.15.0 CHANGELOG tells consumers to pattern-match on
+`ErrorKind::ConsumerDisconnected`. Fix blocker 1 without fixing this, and the
+documented pattern still does not work.
 
 ## Evidence class 2: verified by inspection
 
@@ -239,6 +367,30 @@ fail for three of the four variants, and the input is data that comes off the
 wire. The correct shape is `TryFrom`. Changing it after 1.0 is a breaking
 change.
 
+### `EventDataBatchOptions.max_size_in_bytes` is ignored
+
+Found by the live harness, phase P2. A batch created with
+`max_size_in_bytes: Some(1024)` accepted 64 events of 128 bytes each.
+
+`EventDataBatch::new` reads the caller's value (`src/producer/batch.rs:68`),
+but `attach()` then overwrites it without a comparison
+(`src/producer/batch.rs:87`):
+
+```rust
+self.max_size_in_bytes = sender.max_message_size().await?.ok_or_else(|| { ... })?;
+```
+
+The field is public, is documented as "The maximum size of the batch in bytes",
+and has a doc example that passes `Some(1024)` (`src/producer/batch.rs:351`).
+It has no effect. A caller who caps a batch to bound memory, or to satisfy a
+constraint downstream of the send, gets a silently over-filled batch instead.
+
+The fix is to take the smaller of the caller's value and the link maximum, and
+to reject a caller value larger than the link maximum with a clear error. That
+is a behavior change and not an API break, so it does not have to precede the
+version bump. Shipping a GA release with a documented option that does nothing
+is still the wrong trade.
+
 ### `SendEventOptions` does not implement `Clone`
 
 Found while writing the harness: the type cannot be cloned, so a caller that
@@ -286,20 +438,41 @@ decision rather than leaving it implicit.
 - `README.md:305` points the license at `azure-sdk-for-cpp`.
 - `src/error.rs:33` repeats the "Even Hubs" error in a doc comment.
 
+### Misleading attach log
+
+`src/consumer/mod.rs:315` logs `info!("Receiver attached on partition.")` from
+`open_receiver_on_partition`, which does no network work. The link attaches
+later, on the first poll of `stream_events()`
+(`src/consumer/event_receiver.rs:202`). The message states an event that has not
+happened, and it misdirects anyone debugging from logs.
+
 ## Sequence to 1.0
 
-1. Fix the `mgmt_client` self-deadlock. Folding the management client into the
+1. Fix the link-builder ordering in `azure_core_amqp`, on both the receiver and
+   the sender path, and release it. Add a test that asserts the outgoing Attach
+   frame carries `com.microsoft:epoch`. Event Hubs 1.0.0 cannot ship before
+   this release exists.
+2. Route displacement errors through `translate_receive_error` so a stolen link
+   surfaces as `ConsumerDisconnected`, and stop flattening the described error
+   at `src/common/recoverable/receiver.rs:105`. Then tighten
+   `second_processor_displaces_first_with_consumer_disconnected` to assert
+   `ConsumerDisconnected(Some(_))`.
+3. Fix the `mgmt_client` self-deadlock. Folding the management client into the
    lock-free `OnceCell` pattern that the sender, session, and receiver caches
    already use removes the re-entrant lock rather than working around it. Keep
    `ensure_amqp_management_recovery_self_deadlocks` and remove its `#[ignore]`
    once it passes.
-2. Add `#[non_exhaustive]` to the 16 types listed above.
-3. Replace the four panicking `From<MessageId>` impls with `TryFrom`.
-4. Land the #4454 generation fix, and decide on detach-during-recovery.
-5. Correct the CHANGELOG headers and the README defects.
-6. Run the offline gate and the live smoke test. Both must be green.
-7. Bump to 1.0.0 and publish.
+4. Add `#[non_exhaustive]` to the 16 types listed above.
+5. Replace the four panicking `From<MessageId>` impls with `TryFrom`.
+6. Honor `EventDataBatchOptions.max_size_in_bytes`, derive `Clone` on the
+   options types, and correct the attach log message.
+7. Land the #4454 generation fix, and decide on detach-during-recovery.
+8. Correct the CHANGELOG headers and the README defects.
+9. Run the offline gate and the live smoke test. Both must be green, which
+   means P2 and P5 pass without any change to the harness assertions.
+10. Bump to 1.0.0 and publish.
 
-Items 1 through 3 are the ones that cannot be deferred past the bump. Item 4 is
-a correctness risk that is easier to fix before the API is frozen. Items 5 and 6
-are hygiene.
+Items 1 through 5 cannot be deferred past the bump. Items 1 and 2 are one
+feature between them: owner level does not work end to end until both are done.
+Item 7 is a correctness risk that is easier to fix before the API is frozen.
+The rest is hygiene.

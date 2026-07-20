@@ -72,6 +72,12 @@ const APP_ID: &str = "eventhubs_smoke_test";
 /// How long any single receive is allowed to block before the step is failed.
 const RECEIVE_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
+/// How long a receiver gets to attach. Receivers attach lazily, on the first
+/// poll of `stream_events()`. A phase that must have a live link before it
+/// sends anything polls once with this budget, then continues. The poll is
+/// expected to time out, because the link starts at the tail of the partition.
+const ATTACH_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+
 /// Default per-phase hard timeout. Overridden by `SMOKE_PHASE_TIMEOUT_SECS`.
 const DEFAULT_PHASE_TIMEOUT_SECS: u64 = 120;
 
@@ -843,9 +849,21 @@ async fn phase_processor(
             }
         };
 
-    // The processor's receiver starts at the tail, so push one event to the
-    // claimed partition to guarantee there is something to process.
+    // The partition receiver attaches lazily, on the first poll of
+    // `stream_events()`, and it starts at the tail. Poll it once before the
+    // trigger event is sent so the link exists first. Without this step the
+    // event is enqueued before the attach, the `@latest` filter is evaluated
+    // after it, and the event is never delivered.
     let partition_id = partition_client.get_partition_id().to_string();
+    let mut stream = partition_client.stream_events();
+    let primed = tokio::time::timeout(ATTACH_TIMEOUT, stream.next()).await;
+    if let Ok(Some(Err(e))) = primed {
+        report.fail("P4 processor: attach receiver", e.to_string());
+        stop_processor(&processor, background).await;
+        return Ok(());
+    }
+    report.ok("P4 processor: attach receiver", "");
+
     if let Err(e) = send_trigger_event(cfg, &partition_id).await {
         report.fail("P4 processor: send trigger event", e.to_string());
         stop_processor(&processor, background).await;
@@ -854,7 +872,6 @@ async fn phase_processor(
     report.ok("P4 processor: send trigger event", "");
 
     let checkpoint_seq = {
-        let mut stream = partition_client.stream_events();
         match tokio::time::timeout(RECEIVE_TIMEOUT, stream.next()).await {
             Ok(Some(Ok(event))) => match partition_client.update_checkpoint(&event).await {
                 Ok(()) => Some(event.sequence_number()),
@@ -934,6 +951,10 @@ async fn stop_processor(
 ///
 /// This is the behavior contract introduced in 0.15.0. It is asserted strictly:
 /// a regression toward the old retry-on-stolen behavior fails this phase.
+///
+/// Both receivers are polled once before they are used, because
+/// `open_receiver_on_partition` does not attach the AMQP link. The link is
+/// attached on the first poll of `stream_events()`.
 async fn phase_epoch_steal(
     cfg: &Config,
     report: &mut Report,
@@ -964,6 +985,17 @@ async fn phase_epoch_steal(
         format!("partition {}", state.partition_id),
     );
 
+    // `open_receiver_on_partition` does not attach the AMQP link. The link is
+    // attached on the first poll of `stream_events()`. Poll receiver A now, so
+    // there is a link for receiver B to displace. Hold the stream: a later poll
+    // of the same stream resumes the same receive.
+    let mut stream_a = receiver_a.stream_events();
+    if let Ok(Some(Err(e))) = tokio::time::timeout(ATTACH_TIMEOUT, stream_a.next()).await {
+        report.fail("P5 attach receiver A", e.to_string());
+        return Ok(());
+    }
+    report.ok("P5 attach receiver A", "");
+
     // Open the displacing receiver at a higher epoch.
     let consumer_b = open_consumer(cfg).await?;
     let receiver_b = consumer_b
@@ -982,10 +1014,19 @@ async fn phase_epoch_steal(
         .await?;
     report.ok("P5 open receiver B (owner level 1)", "");
 
+    // Attach receiver B as well, for the same reason: the displacement happens
+    // when B's link attaches, and B must be attached before the marker event is
+    // sent or B starts after the event.
+    let mut stream_b = receiver_b.stream_events();
+    if let Ok(Some(Err(e))) = tokio::time::timeout(ATTACH_TIMEOUT, stream_b.next()).await {
+        report.fail("P5 attach receiver B", e.to_string());
+        return Ok(());
+    }
+    report.ok("P5 attach receiver B", "");
+
     // Receiver A must now report the displacement. Match on the error kind, not
     // on the message text.
     {
-        let mut stream_a = receiver_a.stream_events();
         match tokio::time::timeout(STEAL_TIMEOUT, stream_a.next()).await {
             Ok(Some(Err(e))) => {
                 if matches!(e.kind, ErrorKind::ConsumerDisconnected(_)) {
@@ -1026,7 +1067,6 @@ async fn phase_epoch_steal(
     let _ = producer.close().await;
 
     {
-        let mut stream_b = receiver_b.stream_events();
         let deadline = tokio::time::Instant::now() + RECEIVE_TIMEOUT;
         let mut delivered = false;
         loop {
@@ -1061,6 +1101,9 @@ async fn phase_epoch_steal(
         }
     }
 
+    // The streams borrow the receivers, and `close` takes the receiver by value.
+    drop(stream_a);
+    drop(stream_b);
     let _ = receiver_a.close().await;
     let _ = receiver_b.close().await;
     let _ = consumer_a.close().await;
