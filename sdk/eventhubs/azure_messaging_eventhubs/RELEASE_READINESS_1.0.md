@@ -119,7 +119,7 @@ Result: **21 passed, 2 failed, 2 skipped.**
 | P4 | Receive and `update_checkpoint` | PASS |
 | P4 | Checkpoint persisted in the store | PASS |
 | P5 | Open and attach two receivers at owner levels 0 and 1 | PASS |
-| P5 | The displaced receiver reports `ConsumerDisconnected` | **FAIL** |
+| P5 | The displaced receiver reports `ConsumerDisconnected` | **FAIL**, fixed by #4805 and #4807 |
 | P5 | The displacing receiver receives | PASS |
 | P6 | Idle recovery soak | SKIP, opt-in |
 | P7 | Pre-formed SAS expiry | SKIP, opt-in |
@@ -245,6 +245,20 @@ The caller sees `ErrorKind::AmqpError("Failed to ensure receiver: ...")`. The
 0.15.0 CHANGELOG tells consumers to pattern-match on
 `ErrorKind::ConsumerDisconnected`. Fix blocker 1 without fixing this, and the
 documented pattern still does not work.
+
+Both fixes are confirmed live. With PR #4805 patched into a copy of the
+published `azure_core_amqp` 1.1.0, receiver A's Attach frame carries
+`com.microsoft:epoch: Long(0)` and the broker echoes it back. A displacement by
+a higher owner level then surfaces as
+`ConsumerDisconnected(Some(AmqpDescribedError { condition: LinkStolen, .. }))`.
+This holds in two configurations. With the published AMQP semantics the steal
+arrives through the re-attach rejection. With the `RecvError` fix from PR #4807
+also applied, it arrives directly from the in-flight receive, with one Attach
+and no re-attach. The contract holds now and after the AMQP release.
+
+Two gaps remain in this evidence. The probe used owner levels 0 and 1, so
+same-epoch displacement is not covered, and that is what `EventProcessor` uses.
+The sender path was not exercised.
 
 ## Evidence class 2: verified by inspection
 
@@ -483,12 +497,40 @@ and each verified defect now has a change open against it.
 | Panicking `From<MessageId>` impls | PR #4722, already open |
 | `EventDataBatchOptions.max_size_in_bytes` ignored | PR #4808 |
 
+Verification found three more defects, all filed and none owned yet.
+
+| Item | Where |
+|---|---|
+| `receiver_settle_mode` and `target` ignored on attach | Issue #4809 |
+| A hung AMQP open blocks recovery and every waiter | Issue #4810 |
+| Concurrent attaches race on a duplicate `$cbs` link | Issue #4811 |
+
 Still unowned: the missing `Clone` and `Debug` derives, the misleading attach
 log, the CHANGELOG headers, and the README defects. `AddEventDataOptions` is
 also unreachable from outside the crate, because `producer::batch` is
 `pub(crate)` and `lib.rs` re-exports only `EventDataBatch` and
 `EventDataBatchOptions`. That one belongs in PR #4722, because a reachable
 `AddEventDataOptions` needs `#[non_exhaustive]` too.
+
+## The pattern behind these defects
+
+Four of the defects share one shape: a per-connection resource whose caching
+does not match its AMQP cardinality, or a public option that never reaches the
+wire.
+
+- The epoch property is set and then discarded by the link builder.
+- The management client is cached behind a lock held across its own build.
+- The root connection is cached behind a lock held across an unbounded open.
+- The CBS client is not cached at all, although AMQP permits one `$cbs` node
+  per connection.
+
+Each one is invisible to a unit test. Each needs a real broker, concurrency, or
+both. The sender, session and receiver caches already use a lock-free `OnceCell`
+per path, and the defects are in the resources that did not adopt that pattern.
+That is where to look for the next one.
+
+`receiver_settle_mode` and `target` (#4809) are the same class as the epoch
+property: public options that the attach path never reads.
 
 One correction to an earlier draft of this report: the two ignored tests that
 first demonstrated the deadlock included one that locked the mutex by hand and
