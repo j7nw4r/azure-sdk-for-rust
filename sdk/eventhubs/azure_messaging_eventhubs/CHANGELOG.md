@@ -16,7 +16,7 @@
 
 - Increased `DEFAULT_PARTITION_EXPIRATION_DURATION` from 10 seconds to 60 seconds. The previous default was shorter than `DEFAULT_UPDATE_INTERVAL` (30 seconds), so ownership records expired between load-balancing cycles. The load balancer perpetually saw `current=0` for every consumer and continuously re-claimed partitions, causing widespread duplicate event processing. `EventProcessorBuilder::build` now rejects configurations where `partition_expiration_duration <= update_interval`. ([#3851](https://github.com/Azure/azure-sdk-for-rust/issues/3851))
 - The `EventProcessor`'s load-balancer reconciliation now closes the underlying AMQP receiver for any partition that has been reassigned to another consumer, so the consumer's `stream_events()` resolves and the loop can terminate. Previously a stolen partition's client could continue to attempt receives until the broker tore down the link.
-- Fixed a deadlock when a CBS failure during management-client creation started connection recovery. The management client now uses the same lock-free cache as the sender, session, and receiver paths. ([#4728](https://github.com/Azure/azure-sdk-for-rust/issues/4728))
+- Fixed a deadlock when a CBS failure during management-client creation started connection recovery. ([#4728](https://github.com/Azure/azure-sdk-for-rust/issues/4728))
 
 ### Other Changes
 
